@@ -24,6 +24,7 @@ import com.google.common.io.Resources;
 import fr.insideapp.sonarqube.dart.lang.Dart;
 import org.buildobjects.process.ExternalProcessFailureException;
 import org.buildobjects.process.ProcBuilder;
+import org.buildobjects.process.ProcResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.sonar.api.batch.fs.FilePredicate;
@@ -37,8 +38,10 @@ import org.sonar.api.batch.sensor.issue.NewIssueLocation;
 import org.sonar.api.batch.sensor.issue.internal.DefaultIssueLocation;
 import org.sonar.api.rule.RuleKey;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
@@ -89,11 +92,13 @@ public class DartAnalyzerSensor implements Sensor {
                 // TODO : consider splitting analysis every X files (a command line length limit might occur !)
                 List<String> fileNames = inputFiles.stream().map(i -> i.toString()).collect(Collectors.toList());
                 // Run analysis command
-                String output = new ProcBuilder(ANALYZER_COMMAND)
-                        .withArgs(fileNames.toArray(new String[0]))
-                        .withTimeoutMillis(ANALYZER_TIMEOUT)
-                        .run()
-                        .getOutputString();
+                String output = "";
+                try (OutputStream outputStream = new ByteArrayOutputStream()) {
+                        runDartAnalyzer(fileNames, outputStream);
+                        output = outputStream.toString();
+                } catch (IOException e) {
+                    LOGGER.warn("OutputStream throw IOException", e);
+                }
 
                 // Parse output
                 List<DartAnalyzerReportIssue> issues = reportParser.parse(output);
@@ -123,6 +128,35 @@ public class DartAnalyzerSensor implements Sensor {
 
         }
 
+    }
+
+    private void runDartAnalyzer(List<String> fileNames, OutputStream outputStream) {
+        try {
+            ProcResult procResult = new ProcBuilder(ANALYZER_COMMAND)
+                    .withArgs(fileNames.toArray(new String[0]))
+                    .withTimeoutMillis(ANALYZER_TIMEOUT)
+                    .withOutputStream(outputStream)
+                    .run();
+            if(LOGGER.isInfoEnabled()) {
+                LOGGER.info("Run DartAnalyzer done - {}", dartAnalyzerExitValueToString(procResult.getExitValue()));
+            }
+        } catch (ExternalProcessFailureException externalProcessFailureException) {
+            int exitValue = externalProcessFailureException.getExitValue();
+            LOGGER.info("Run DartAnalyzer done - return : {}, reason : {}", exitValue, dartAnalyzerExitValueToString(externalProcessFailureException.getExitValue()));
+        }
+    }
+
+    private String dartAnalyzerExitValueToString(int exitValue) {
+        switch (exitValue) {
+            case 1:
+                return "has hints";
+            case 2:
+                return "has warnings";
+            case 3:
+                return  "has errors";
+            default:
+                return  "has no error";
+        }
     }
 
     private boolean verifyCommand() {
